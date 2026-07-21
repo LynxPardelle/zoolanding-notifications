@@ -1,0 +1,361 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Generic draft-scoped outbound SMTP notification worker.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    AllowedValues:
+      - test
+      - production
+  CommerceNotificationRequestsTopicArn:
+    Type: String
+    AllowedPattern: '^arn:(aws|aws-us-gov|aws-cn):sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_.-]+$'
+  AlarmTopicArn:
+    Type: String
+    AllowedPattern: '^arn:(aws|aws-us-gov|aws-cn):sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_.-]+$'
+  ConfigRegistryTableName:
+    Type: String
+    MinLength: 3
+    MaxLength: 255
+    AllowedPattern: '^[A-Za-z0-9_.-]{3,255}$'
+  ConfigPayloadsBucketName:
+    Type: String
+    MinLength: 3
+    MaxLength: 63
+    AllowedPattern: '^[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])$'
+  IntegrationsApiId:
+    Type: String
+    MinLength: 10
+    MaxLength: 10
+    AllowedPattern: '^[a-z0-9]{10}$'
+
+Mappings:
+  IntegrationsStageByEnvironment:
+    test:
+      Stage: test
+    production:
+      Stage: production
+
+Resources:
+  DeliveryLedger:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+
+  NotificationDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  NotificationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 345600
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn:
+          Fn::GetAtt:
+            - NotificationDeadLetterQueue
+            - Arn
+        maxReceiveCount: 5
+
+  NotificationQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - Ref: NotificationQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CommerceNotificationRequestsOnly
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource:
+              Fn::GetAtt:
+                - NotificationQueue
+                - Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  Ref: CommerceNotificationRequestsTopicArn
+              StringEquals:
+                aws:SourceAccount:
+                  Ref: AWS::AccountId
+
+  CommerceNotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn:
+        Ref: CommerceNotificationRequestsTopicArn
+      Protocol: sqs
+      Endpoint:
+        Fn::GetAtt:
+          - NotificationQueue
+          - Arn
+      RawMessageDelivery: true
+      FilterPolicyScope: MessageBody
+      FilterPolicy:
+        eventType:
+          - notification.requested.v1
+
+  SmtpDeliveryWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName:
+        Fn::Sub: /aws/lambda/zoolanding-notifications-${EnvironmentName}-smtp-delivery
+      RetentionInDays: 90
+
+  SmtpDeliveryWorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: smtp-delivery-worker
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  Fn::GetAtt:
+                    - NotificationQueue
+                    - Arn
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  Fn::Sub: arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/zoolanding-notifications-${EnvironmentName}-smtp-delivery:*
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  Fn::GetAtt:
+                    - DeliveryLedger
+                    - Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource:
+                  Fn::Sub: arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigRegistryTableName}
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - Fn::Sub: arn:${AWS::Partition}:s3:::${ConfigPayloadsBucketName}/sites/*/versions/*/_manifest.json
+                  - Fn::Sub: arn:${AWS::Partition}:s3:::${ConfigPayloadsBucketName}/sites/*/versions/*/*/server/notification-policies.json
+              - Effect: Allow
+                Action:
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/zoolanding/${EnvironmentName}/*/*/notifications/smtp/*-*
+                  - Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/zoolanding/${EnvironmentName}/*/*/notifications/recipients/*/*/*-*
+              - Effect: Allow
+                Action:
+                  - execute-api:Invoke
+                Resource:
+                  Fn::Sub:
+                    - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${IntegrationsApiId}/${IntegrationsStage}/POST/internal/v1/integrations/connection-resolve
+                    - IntegrationsStage:
+                        Fn::FindInMap:
+                          - IntegrationsStageByEnvironment
+                          - Ref: EnvironmentName
+                          - Stage
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: Zoolanding/Notifications
+
+  SmtpDeliveryWorkerFunction:
+    Type: AWS::Serverless::Function
+    DependsOn:
+      - SmtpDeliveryWorkerLogGroup
+    Properties:
+      FunctionName:
+        Fn::Sub: zoolanding-notifications-${EnvironmentName}-smtp-delivery
+      Runtime: python3.13
+      Architectures:
+        - x86_64
+      CodeUri: src/
+      Handler: handlers.smtp_delivery_worker.lambda_handler
+      Timeout: 30
+      MemorySize: 256
+      ReservedConcurrentExecutions: 2
+      Role:
+        Fn::GetAtt:
+          - SmtpDeliveryWorkerRole
+          - Arn
+      Environment:
+        Variables:
+          ENVIRONMENT_NAME:
+            Ref: EnvironmentName
+          DELIVERY_LEDGER_TABLE_NAME:
+            Ref: DeliveryLedger
+          CONFIG_REGISTRY_TABLE_NAME:
+            Ref: ConfigRegistryTableName
+          CONFIG_PAYLOADS_BUCKET_NAME:
+            Ref: ConfigPayloadsBucketName
+          INTEGRATIONS_API_ID:
+            Ref: IntegrationsApiId
+          INTEGRATIONS_URL_SUFFIX:
+            Ref: AWS::URLSuffix
+      Events:
+        NotificationQueue:
+          Type: SQS
+          Properties:
+            Queue:
+              Fn::GetAtt:
+                - NotificationQueue
+                - Arn
+            BatchSize: 1
+            MaximumBatchingWindowInSeconds: 0
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+            ScalingConfig:
+              MaximumConcurrency: 2
+
+  DlqDepthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Notifications DLQ contains a message.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value:
+            Fn::GetAtt:
+              - NotificationDeadLetterQueue
+              - QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - Ref: AlarmTopicArn
+
+  QueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Oldest notification request exceeds five minutes.
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value:
+            Fn::GetAtt:
+              - NotificationQueue
+              - QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 300
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - Ref: AlarmTopicArn
+
+  LambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Notification worker reports errors.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: SmtpDeliveryWorkerFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - Ref: AlarmTopicArn
+
+  LambdaThrottlesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Notification worker is throttled.
+      Namespace: AWS/Lambda
+      MetricName: Throttles
+      Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: SmtpDeliveryWorkerFunction
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - Ref: AlarmTopicArn
+
+  SmtpCircuitAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: SMTP authentication or quota circuit opened.
+      Namespace: Zoolanding/Notifications
+      MetricName: CircuitOpen
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - Ref: AlarmTopicArn
+
+Outputs:
+  NotificationQueueArn:
+    Value:
+      Fn::GetAtt:
+        - NotificationQueue
+        - Arn
+  DeliveryLedgerName:
+    Value:
+      Ref: DeliveryLedger
