@@ -27,9 +27,36 @@ class CloudWatchMetrics:
     def circuit_opened(self, environment: str, reason_code: str) -> None:
         if environment not in {"test", "production"} or reason_code not in {"smtp_authentication", "smtp_quota"}:
             return
+        reason_metric = {
+            "smtp_authentication": "Smtp2GoAuthenticationRejected",
+            "smtp_quota": "Smtp2GoQuotaRejected",
+        }[reason_code]
+        dimensions = [{"Name": "Environment", "Value": environment}]
         self._client.put_metric_data(
             Namespace="Zoolanding/Notifications",
-            MetricData=[{"MetricName": "CircuitOpen", "Unit": "Count", "Value": 1}],
+            MetricData=[
+                {"MetricName": "CircuitOpen", "Unit": "Count", "Value": 1, "Dimensions": dimensions},
+                {"MetricName": reason_metric, "Unit": "Count", "Value": 1, "Dimensions": dimensions},
+            ],
+        )
+
+    def smtp_throttled(self, environment: str) -> None:
+        self._count(environment, "Smtp2GoThrottleRejected")
+
+    def test_live_mismatch(self, environment: str) -> None:
+        self._count(environment, "TestLiveMismatch")
+
+    def _count(self, environment: str, metric_name: str) -> None:
+        if environment not in {"test", "production"}:
+            return
+        self._client.put_metric_data(
+            Namespace="Zoolanding/Notifications",
+            MetricData=[{
+                "MetricName": metric_name,
+                "Unit": "Count",
+                "Value": 1,
+                "Dimensions": [{"Name": "Environment", "Value": environment}],
+            }],
         )
 
 

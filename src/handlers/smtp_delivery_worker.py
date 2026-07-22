@@ -40,6 +40,7 @@ def process_batch(
         try:
             event = parse_event_json(body)
             if event.environment != expected_environment:
+                worker.record_test_live_mismatch(expected_environment)
                 raise ValueError
             outcome = worker.process(event, now_epoch=now_epoch)
             if outcome != "processed":

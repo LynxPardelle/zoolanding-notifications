@@ -78,11 +78,11 @@ class SMTPAdapter:
                     pass
             return SMTPResult("accepted_by_smtp", "smtp_accepted")
         except smtplib.SMTPAuthenticationError as error:
-            return _response_result(error.smtp_code)
+            return _response_result(error.smtp_code, error.smtp_error)
         except smtplib.SMTPRecipientsRefused as error:
             return _recipient_result(error.recipients)
         except smtplib.SMTPResponseException as error:
-            return _response_result(error.smtp_code)
+            return _response_result(error.smtp_code, error.smtp_error)
         except (ssl.SSLError, socket.timeout, TimeoutError, smtplib.SMTPServerDisconnected, OSError):
             return SMTPResult("uncertain", "smtp_ambiguous")
         except Exception:
@@ -98,15 +98,18 @@ class SMTPAdapter:
 def _recipient_result(value: object) -> SMTPResult:
     if not isinstance(value, dict) or not value:
         return SMTPResult("uncertain", "smtp_ambiguous")
-    codes: list[int] = []
+    responses: list[tuple[int, object]] = []
     for result in value.values():
         if not isinstance(result, (tuple, list)) or not result or type(result[0]) is not int:
             return SMTPResult("uncertain", "smtp_ambiguous")
-        codes.append(result[0])
+        responses.append((result[0], result[1] if len(result) > 1 else b""))
+    codes = [code for code, _response in responses]
     if 535 in codes:
         return SMTPResult("failed", "smtp_authentication")
     if 552 in codes:
         return SMTPResult("failed", "smtp_quota")
+    if any(_is_documented_throttle(code, response) for code, response in responses):
+        return SMTPResult("retryable", "smtp_throttled")
     if any(400 <= code <= 499 for code in codes):
         return SMTPResult("retryable", "smtp_transient")
     if all(500 <= code <= 599 for code in codes):
@@ -114,13 +117,29 @@ def _recipient_result(value: object) -> SMTPResult:
     return SMTPResult("uncertain", "smtp_ambiguous")
 
 
-def _response_result(code: object) -> SMTPResult:
+def _response_result(code: object, response: object = b"") -> SMTPResult:
     if code == 535:
         return SMTPResult("failed", "smtp_authentication")
     if code == 552:
         return SMTPResult("failed", "smtp_quota")
+    if _is_documented_throttle(code, response):
+        return SMTPResult("retryable", "smtp_throttled")
     if type(code) is int and 400 <= code <= 499:
         return SMTPResult("retryable", "smtp_transient")
     if type(code) is int and 500 <= code <= 599:
         return SMTPResult("failed", "smtp_permanent")
     return SMTPResult("uncertain", "smtp_ambiguous")
+
+
+def _is_documented_throttle(code: object, response: object) -> bool:
+    if code not in {421, 550} or not isinstance(response, (bytes, bytearray)):
+        return False
+    normalized = bytes(response[:512]).lower()
+    phrases = (
+        b"username has exceeded the allowed sending rate",
+        b"ip address exceeded the allowed sending",
+        b"username rate limit exceeded",
+        b"too many concurrent smtp connections",
+        b"too many connections from that ip address",
+    )
+    return any(phrase in normalized for phrase in phrases)

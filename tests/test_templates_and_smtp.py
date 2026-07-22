@@ -131,6 +131,11 @@ class SMTPAdapterTests(unittest.TestCase):
         cases = (
             (smtplib.SMTPDataError(450, b"transient sensitive"), ("retryable", "smtp_transient")),
             (smtplib.SMTPDataError(550, b"permanent sensitive"), ("failed", "smtp_permanent")),
+            (smtplib.SMTPDataError(550, b"username rate limit exceeded"), ("retryable", "smtp_throttled")),
+            (smtplib.SMTPDataError(550, b"Your username has exceeded the allowed sending rate"), ("retryable", "smtp_throttled")),
+            (smtplib.SMTPDataError(550, b"Your IP address exceeded the allowed sending rate"), ("retryable", "smtp_throttled")),
+            (smtplib.SMTPDataError(421, b"Too many concurrent SMTP connections"), ("retryable", "smtp_throttled")),
+            (smtplib.SMTPDataError(421, b"Too many connections from that IP address"), ("retryable", "smtp_throttled")),
             (smtplib.SMTPAuthenticationError(535, b"auth sensitive"), ("failed", "smtp_authentication")),
             (smtplib.SMTPAuthenticationError(454, b"temporary auth sensitive"), ("retryable", "smtp_transient")),
             (smtplib.SMTPDataError(552, b"quota sensitive"), ("failed", "smtp_quota")),

@@ -1,0 +1,21 @@
+version = 0.1
+
+[test.deploy.parameters]
+stack_name = "zoolanding-notifications-test"
+resolve_s3 = true
+s3_prefix = "zoolanding-notifications-test"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
+fail_on_empty_changeset = false
+parameter_overrides = ["EnvironmentName=test"]
+
+[production.deploy.parameters]
+stack_name = "zoolanding-notifications-production"
+resolve_s3 = true
+s3_prefix = "zoolanding-notifications-production"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = false
+fail_on_empty_changeset = false
+parameter_overrides = ["EnvironmentName=production"]
