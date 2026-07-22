@@ -327,6 +327,34 @@ class RepositoryContractTests(unittest.TestCase):
                 self.assertIn(f'"ConfigPayloadsBucketName=/zoolanding/{environment}/config/payload-bucket-name"', text)
                 self.assertIn(f'"CommerceNotificationRequestsTopicArn=/zoolanding/{environment}/topics/commerce-notification-requests-arn"', text)
                 self.assertIn(f'"IntegrationsApiId=/zoolanding/{environment}/services/integrations/api-id"', text)
+                self.assertIn(
+                    "role_pattern='^arn:(aws|aws-us-gov|aws-cn):iam::([0-9]{12}):role/",
+                    text,
+                )
+                self.assertIn(
+                    "topic_pattern='^arn:(aws|aws-us-gov|aws-cn):sns:([a-z0-9-]+):([0-9]{12}):",
+                    text,
+                )
+                self.assertIn('cloudformation_account="${BASH_REMATCH[2]}"', text)
+                self.assertIn('alarm_region="${BASH_REMATCH[2]}"', text)
+                self.assertIn('[[ "$cloudformation_partition" = "$deployment_partition" ]]', text)
+                self.assertIn('[[ "$cloudformation_account" = "$deployment_account" ]]', text)
+                self.assertIn('[[ "$alarm_region" = "$AWS_REGION" ]]', text)
+                self.assertIn("Validate exact cross-service SSM values", text)
+                self.assertIn(
+                    f'prefix="/zoolanding/{environment}"',
+                    text,
+                )
+                self.assertIn(
+                    'commerce_topic="$(read_parameter "$prefix/topics/commerce-notification-requests-arn")"',
+                    text,
+                )
+                self.assertIn(
+                    'integrations_api_id="$(read_parameter "$prefix/services/integrations/api-id")"',
+                    text,
+                )
+                self.assertIn('[[ "$topic_account" = "$deployment_account" ]]', text)
+                self.assertIn('[[ "$topic_region" = "$AWS_REGION" ]]', text)
                 self.assertIn("python -m pip_audit -r requirements-dev.txt", text)
                 for uses in re.findall(r"(?m)^\s*-?\s*uses:\s*([^\s#]+)", text):
                     self.assertRegex(uses, r"^[^@]+@[a-f0-9]{40}$")
