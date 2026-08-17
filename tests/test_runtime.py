@@ -41,29 +41,71 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 runtime.notification_worker()
 
-    def test_circuit_metric_is_closed_and_has_no_scope_or_reason_dimension(self):
+    def test_operational_metrics_have_only_the_non_sensitive_environment_dimension(self):
         from src.runtime import CloudWatchMetrics
 
         client = Client()
         metrics = CloudWatchMetrics(client)
         metrics.circuit_opened("test", "smtp_authentication")
         metrics.circuit_opened("production", "smtp_quota")
+        metrics.smtp_throttled("test")
+        metrics.test_live_mismatch("production")
         metrics.circuit_opened("dev", "smtp_quota")
         metrics.circuit_opened("test", "provider text")
+        metrics.smtp_throttled("dev")
+        metrics.test_live_mismatch("dev")
 
         self.assertEqual(
             client.calls,
             [
                 {
                     "Namespace": "Zoolanding/Notifications",
-                    "MetricData": [{"MetricName": "CircuitOpen", "Unit": "Count", "Value": 1}],
+                    "MetricData": [
+                        {
+                            "MetricName": "CircuitOpen", "Unit": "Count", "Value": 1,
+                            "Dimensions": [{"Name": "Environment", "Value": "test"}],
+                        },
+                        {
+                            "MetricName": "Smtp2GoAuthenticationRejected", "Unit": "Count", "Value": 1,
+                            "Dimensions": [{"Name": "Environment", "Value": "test"}],
+                        },
+                    ],
                 },
                 {
                     "Namespace": "Zoolanding/Notifications",
-                    "MetricData": [{"MetricName": "CircuitOpen", "Unit": "Count", "Value": 1}],
+                    "MetricData": [
+                        {
+                            "MetricName": "CircuitOpen", "Unit": "Count", "Value": 1,
+                            "Dimensions": [{"Name": "Environment", "Value": "production"}],
+                        },
+                        {
+                            "MetricName": "Smtp2GoQuotaRejected", "Unit": "Count", "Value": 1,
+                            "Dimensions": [{"Name": "Environment", "Value": "production"}],
+                        },
+                    ],
+                },
+                {
+                    "Namespace": "Zoolanding/Notifications",
+                    "MetricData": [{
+                        "MetricName": "Smtp2GoThrottleRejected", "Unit": "Count", "Value": 1,
+                        "Dimensions": [{"Name": "Environment", "Value": "test"}],
+                    }],
+                },
+                {
+                    "Namespace": "Zoolanding/Notifications",
+                    "MetricData": [{
+                        "MetricName": "TestLiveMismatch", "Unit": "Count", "Value": 1,
+                        "Dimensions": [{"Name": "Environment", "Value": "production"}],
+                    }],
                 },
             ],
         )
+        for call, environment in zip(client.calls, ("test", "production", "test", "production"), strict=True):
+            for datum in call["MetricData"]:
+                self.assertEqual(
+                    datum["Dimensions"],
+                    [{"Name": "Environment", "Value": environment}],
+                )
 
 
 if __name__ == "__main__":

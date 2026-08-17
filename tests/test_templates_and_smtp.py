@@ -131,6 +131,11 @@ class SMTPAdapterTests(unittest.TestCase):
         cases = (
             (smtplib.SMTPDataError(450, b"transient sensitive"), ("retryable", "smtp_transient")),
             (smtplib.SMTPDataError(550, b"permanent sensitive"), ("failed", "smtp_permanent")),
+            (smtplib.SMTPDataError(550, b"username rate limit exceeded"), ("retryable", "smtp_throttled")),
+            (smtplib.SMTPDataError(550, b"Your username has exceeded the allowed sending rate"), ("retryable", "smtp_throttled")),
+            (smtplib.SMTPDataError(550, b"Your IP address exceeded the allowed sending rate"), ("retryable", "smtp_throttled")),
+            (smtplib.SMTPDataError(421, b"Too many concurrent SMTP connections"), ("retryable", "smtp_throttled")),
+            (smtplib.SMTPDataError(421, b"Too many connections from that IP address"), ("retryable", "smtp_throttled")),
             (smtplib.SMTPAuthenticationError(535, b"auth sensitive"), ("failed", "smtp_authentication")),
             (smtplib.SMTPAuthenticationError(454, b"temporary auth sensitive"), ("retryable", "smtp_transient")),
             (smtplib.SMTPDataError(552, b"quota sensitive"), ("failed", "smtp_quota")),
@@ -145,6 +150,42 @@ class SMTPAdapterTests(unittest.TestCase):
                 result = self.send()
                 self.assertEqual((result.outcome, result.reason_code), expected)
                 self.assertNotIn("sensitive", repr(result))
+
+    def test_retries_network_failures_before_smtp_data(self):
+        from src.smtp_adapter import SMTPAdapter
+        from src.templates import render_message
+
+        event, connection, smtp_secret, recipient = dependencies()
+        message = render_message(event, connection, recipient)
+
+        def failed_connection(*_args, **_kwargs):
+            raise socket.timeout("sensitive connection detail")
+
+        class FailedLoginSMTP(FakeSMTP):
+            def login(self, username, password):
+                del username, password
+                raise smtplib.SMTPServerDisconnected("sensitive login detail")
+
+        for factory in (failed_connection, FailedLoginSMTP):
+            with self.subTest(factory=factory):
+                result = SMTPAdapter(factory=factory).send(connection, smtp_secret, message)
+                self.assertEqual((result.outcome, result.reason_code), ("retryable", "smtp_transient"))
+                self.assertNotIn("sensitive", repr(result))
+
+    def test_fails_closed_when_tls_certificate_validation_fails_before_smtp_data(self):
+        from src.smtp_adapter import SMTPAdapter
+        from src.templates import render_message
+
+        event, connection, smtp_secret, recipient = dependencies()
+        message = render_message(event, connection, recipient)
+
+        def invalid_certificate(*_args, **_kwargs):
+            raise ssl.SSLCertVerificationError("sensitive certificate detail")
+
+        result = SMTPAdapter(factory=invalid_certificate).send(connection, smtp_secret, message)
+
+        self.assertEqual((result.outcome, result.reason_code), ("failed", "smtp_permanent"))
+        self.assertNotIn("sensitive", repr(result))
 
     def test_sanitizes_partial_recipient_errors_and_rejects_endpoint_downgrade(self):
         from dataclasses import replace

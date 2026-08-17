@@ -22,7 +22,7 @@ class RepositoryContractTests(unittest.TestCase):
         }
         self.assertEqual(module_names.intersection(sys.stdlib_module_names), set())
 
-    def test_has_one_worker_no_api_and_no_dev_or_deploy_surface(self):
+    def test_has_one_worker_no_api_and_only_test_production_deploy_surfaces(self):
         value = template()
         resources = value["Resources"]
         functions = {key: item for key, item in resources.items() if item["Type"] == "AWS::Serverless::Function"}
@@ -45,8 +45,81 @@ class RepositoryContractTests(unittest.TestCase):
         environment = value["Parameters"]["EnvironmentName"]
         self.assertEqual(environment["AllowedValues"], ["test", "production"])
         self.assertNotIn("Default", environment)
-        self.assertFalse((ROOT / "samconfig.toml").exists())
-        self.assertFalse((ROOT / ".github" / "workflows").exists())
+        self.assertTrue((ROOT / "samconfig.toml").is_file())
+        self.assertEqual(
+            {path.name for path in (ROOT / ".github" / "workflows").glob("*.yml")},
+            {"ci.yml", "deploy-test.yml", "deploy-production.yml"},
+        )
+        samconfig = (ROOT / "samconfig.toml").read_text(encoding="utf-8")
+        self.assertIn("[test.deploy.parameters]", samconfig)
+        self.assertIn("[production.deploy.parameters]", samconfig)
+        self.assertNotRegex(samconfig, r"(?m)^\[(?:dev|default)\.")
+
+    def test_cross_service_identifiers_use_exact_environment_scoped_ssm_paths(self):
+        value = template()
+        parameters = value["Parameters"]
+        expected_paths = {
+            "ConfigRegistryTableName": "config/registry-table-name",
+            "ConfigPayloadsBucketName": "config/payload-bucket-name",
+            "CommerceNotificationRequestsTopicArn": "topics/commerce-notification-requests-arn",
+            "IntegrationsApiId": "services/integrations/api-id",
+        }
+        for name, suffix in expected_paths.items():
+            self.assertEqual(parameters[name]["Type"], "AWS::SSM::Parameter::Value<String>")
+            self.assertEqual(
+                parameters[name]["AllowedPattern"],
+                rf"^/zoolanding/(test|production)/{suffix}$",
+            )
+            self.assertEqual(
+                parameters[name]["AllowedValues"],
+                [f"/zoolanding/test/{suffix}", f"/zoolanding/production/{suffix}"],
+            )
+        rendered = (ROOT / "template.yaml").read_text(encoding="utf-8")
+        for environment in ("test", "production"):
+            for suffix in expected_paths.values():
+                self.assertIn(f"/zoolanding/{environment}/{suffix}", rendered)
+
+        resources = value["Resources"]
+        published = {
+            key: item
+            for key, item in resources.items()
+            if item["Type"] == "AWS::SSM::Parameter"
+        }
+        self.assertEqual(
+            set(published),
+            {
+                "SmtpWorkerRoleArnParameter",
+                "NotificationQueueArnParameter",
+                "DeliveryLedgerNameParameter",
+            },
+        )
+        self.assertEqual(
+            published["SmtpWorkerRoleArnParameter"]["Properties"]["Name"],
+            {"Fn::Sub": "/zoolanding/${EnvironmentName}/services/notifications/smtp-worker-role-arn"},
+        )
+        self.assertEqual(
+            published["NotificationQueueArnParameter"]["Properties"]["Name"],
+            {"Fn::Sub": "/zoolanding/${EnvironmentName}/queues/notification-requests-arn"},
+        )
+        self.assertEqual(
+            published["DeliveryLedgerNameParameter"]["Properties"]["Name"],
+            {"Fn::Sub": "/zoolanding/${EnvironmentName}/tables/notifications-delivery-ledger-name"},
+        )
+        for item in published.values():
+            self.assertEqual(item["Properties"]["Type"], "String")
+            self.assertNotIn("SecureString", item["Properties"])
+        self.assertEqual(
+            published["SmtpWorkerRoleArnParameter"]["Properties"]["Value"],
+            {"Fn::GetAtt": ["SmtpDeliveryWorkerRole", "Arn"]},
+        )
+        self.assertEqual(
+            published["NotificationQueueArnParameter"]["Properties"]["Value"],
+            {"Fn::GetAtt": ["NotificationQueue", "Arn"]},
+        )
+        self.assertEqual(
+            published["DeliveryLedgerNameParameter"]["Properties"]["Value"],
+            {"Ref": "DeliveryLedger"},
+        )
 
     def test_queue_dlq_subscription_filter_and_partial_batch_are_exact(self):
         value = template()
@@ -117,8 +190,10 @@ class RepositoryContractTests(unittest.TestCase):
         rendered = (ROOT / "template.yaml").read_text(encoding="utf-8")
         self.assertIn("/sites/*/versions/*/_manifest.json", rendered)
         self.assertIn("/sites/*/versions/*/*/server/notification-policies.json", rendered)
-        self.assertIn("/notifications/smtp/*-*", rendered)
-        self.assertIn("/notifications/recipients/*/*/*-*", rendered)
+        self.assertIn("/notifications/smtp/*-??????", rendered)
+        self.assertIn("/notifications/recipients/*/*/*-??????", rendered)
+        self.assertNotIn("/notifications/smtp/*-*", rendered)
+        self.assertNotIn("/notifications/recipients/*/*/*-*", rendered)
         invoke = next(statement for statement in statements if "execute-api:Invoke" in statement["Action"])
         expected_stage = {
             "Fn::FindInMap": [
@@ -164,20 +239,20 @@ class RepositoryContractTests(unittest.TestCase):
         parameters = template()["Parameters"]
         cases = {
             "ConfigRegistryTableName": (
-                "zoolanding-config-registry-test",
-                ("table*", "table/name", "${AWS::AccountId}"),
+                "/zoolanding/test/config/registry-table-name",
+                ("zoolanding-config-registry-test", "/zoolanding/dev/config/registry-table-name"),
             ),
             "ConfigPayloadsBucketName": (
-                "zoolanding-config-payloads-test",
-                ("bucket*", "bucket/name", "${AWS::AccountId}"),
+                "/zoolanding/production/config/payload-bucket-name",
+                ("bucket-name", "/zoolanding/dev/config/payload-bucket-name"),
             ),
             "IntegrationsApiId": (
-                "abc123def4",
-                ("short", "ABC123DEF4", "abc123def*", "abc123def/"),
+                "/zoolanding/test/services/integrations/api-id",
+                ("abc123def4", "/zoolanding/dev/services/integrations/api-id"),
             ),
             "CommerceNotificationRequestsTopicArn": (
-                "arn:aws:sns:us-east-1:123456789012:commerce-notifications-test",
-                ("arn:aws:sns:us-east-1:123456789012:*",),
+                "/zoolanding/production/topics/commerce-notification-requests-arn",
+                ("arn:aws:sns:us-east-1:123456789012:topic", "/zoolanding/dev/topics/commerce-notification-requests-arn"),
             ),
             "AlarmTopicArn": (
                 "arn:aws:sns:us-east-1:123456789012:operator-alarms-test",
@@ -201,12 +276,112 @@ class RepositoryContractTests(unittest.TestCase):
         alarms = {key for key, value in resources.items() if value["Type"] == "AWS::CloudWatch::Alarm"}
         self.assertEqual(
             alarms,
-            {"DlqDepthAlarm", "QueueAgeAlarm", "LambdaErrorsAlarm", "LambdaThrottlesAlarm", "SmtpCircuitAlarm"},
+            {
+                "QueueDepthAlarm", "QueueAgeAlarm", "DlqDepthAlarm", "DlqAgeAlarm",
+                "LambdaErrorsAlarm", "LambdaThrottlesAlarm", "SmtpCircuitAlarm",
+                "Smtp2GoAuthenticationAlarm", "Smtp2GoQuotaAlarm",
+                "Smtp2GoThrottleAlarm", "TestLiveMismatchAlarm",
+            },
         )
         for key in alarms:
             props = resources[key]["Properties"]
             self.assertEqual(props["AlarmActions"], [{"Ref": "AlarmTopicArn"}])
             self.assertEqual(props["TreatMissingData"], "notBreaching")
+        for key in {
+            "SmtpCircuitAlarm", "Smtp2GoAuthenticationAlarm", "Smtp2GoQuotaAlarm",
+            "Smtp2GoThrottleAlarm", "TestLiveMismatchAlarm",
+        }:
+            self.assertEqual(
+                resources[key]["Properties"]["Dimensions"],
+                [{"Name": "Environment", "Value": {"Ref": "EnvironmentName"}}],
+            )
+
+    def test_ci_and_protected_deploy_workflows_are_digest_bound_and_oidc_is_deploy_only(self):
+        workflows = ROOT / ".github" / "workflows"
+        ci_text = (workflows / "ci.yml").read_text(encoding="utf-8")
+        self.assertRegex(ci_text, r"(?m)^\s{2}push:\s*$")
+        self.assertRegex(ci_text, r"(?m)^\s{2}pull_request:\s*$")
+        self.assertNotIn("configure-aws-credentials", ci_text)
+        self.assertNotIn("id-token: write", ci_text)
+        self.assertIn("python -m pip_audit -r requirements-dev.txt", ci_text)
+        self.assertIn("gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7", ci_text)
+        self.assertIn("fetch-depth: 0", ci_text)
+        self.assertIn("cancel-in-progress: true", ci_text)
+        self.assertEqual(ci_text.count("timeout-minutes:"), 2)
+        self.assertRegex(
+            ci_text,
+            r"(?m)^permissions:\n  contents: read\n  pull-requests: read$",
+        )
+        self.assertLess(
+            ci_text.index("Verify exact clean commit"),
+            ci_text.index("Scan repository and history for secrets"),
+        )
+        self.assertLess(
+            ci_text.index("Validate exact SAM build"),
+            ci_text.index("Scan repository and history for secrets"),
+        )
+
+        cases = {
+            "deploy-test.yml": ("test", "dev", "test"),
+            "deploy-production.yml": ("production", "test", "main"),
+        }
+        for filename, (environment, source, target) in cases.items():
+            text = (workflows / filename).read_text(encoding="utf-8")
+            with self.subTest(filename=filename):
+                self.assertIn(f"environment: {environment}", text)
+                self.assertIn(f"SOURCE_BRANCH: {source}", text)
+                self.assertIn(f"TARGET_BRANCH: {target}", text)
+                self.assertGreaterEqual(text.count("promotion_target_tip_mismatch"), 2)
+                self.assertIn("manifest_digest", text)
+                self.assertIn("sha256sum --check --strict", text)
+                self.assertIn("artifact-ids:", text)
+                self.assertEqual(text.count("id-token: write"), 1)
+                self.assertEqual(text.count("configure-aws-credentials@"), 1)
+                self.assertNotIn("${{ vars.", text)
+                for secret_name in (
+                    "AWS_ROLE_ARN",
+                    "AWS_CLOUDFORMATION_ROLE_ARN",
+                    "ALARM_TOPIC_ARN",
+                ):
+                    self.assertIn(f"secrets.{secret_name}", text)
+                self.assertIn("mask-aws-account-id: true", text)
+                self.assertLess(text.rfind("promotion_target_tip_mismatch"), text.index("configure-aws-credentials@"))
+                self.assertIn(f'"EnvironmentName={environment}"', text)
+                self.assertIn(f'"ConfigRegistryTableName=/zoolanding/{environment}/config/registry-table-name"', text)
+                self.assertIn(f'"ConfigPayloadsBucketName=/zoolanding/{environment}/config/payload-bucket-name"', text)
+                self.assertIn(f'"CommerceNotificationRequestsTopicArn=/zoolanding/{environment}/topics/commerce-notification-requests-arn"', text)
+                self.assertIn(f'"IntegrationsApiId=/zoolanding/{environment}/services/integrations/api-id"', text)
+                self.assertIn(
+                    "role_pattern='^arn:(aws|aws-us-gov|aws-cn):iam::([0-9]{12}):role/",
+                    text,
+                )
+                self.assertIn(
+                    "topic_pattern='^arn:(aws|aws-us-gov|aws-cn):sns:([a-z0-9-]+):([0-9]{12}):",
+                    text,
+                )
+                self.assertIn('cloudformation_account="${BASH_REMATCH[2]}"', text)
+                self.assertIn('alarm_region="${BASH_REMATCH[2]}"', text)
+                self.assertIn('[[ "$cloudformation_partition" = "$deployment_partition" ]]', text)
+                self.assertIn('[[ "$cloudformation_account" = "$deployment_account" ]]', text)
+                self.assertIn('[[ "$alarm_region" = "$AWS_REGION" ]]', text)
+                self.assertIn("Validate exact cross-service SSM values", text)
+                self.assertIn(
+                    f'prefix="/zoolanding/{environment}"',
+                    text,
+                )
+                self.assertIn(
+                    'commerce_topic="$(read_parameter "$prefix/topics/commerce-notification-requests-arn")"',
+                    text,
+                )
+                self.assertIn(
+                    'integrations_api_id="$(read_parameter "$prefix/services/integrations/api-id")"',
+                    text,
+                )
+                self.assertIn('[[ "$topic_account" = "$deployment_account" ]]', text)
+                self.assertIn('[[ "$topic_region" = "$AWS_REGION" ]]', text)
+                self.assertIn("python -m pip_audit -r requirements-dev.txt", text)
+                for uses in re.findall(r"(?m)^\s*-?\s*uses:\s*([^\s#]+)", text):
+                    self.assertRegex(uses, r"^[^@]+@[a-f0-9]{40}$")
 
     def test_dependencies_and_repository_text_have_no_runtime_mail_library_or_sensitive_fixture(self):
         root = [line.strip() for line in (ROOT / "requirements.txt").read_text().splitlines() if line.strip()]

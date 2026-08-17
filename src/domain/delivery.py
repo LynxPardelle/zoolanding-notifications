@@ -23,6 +23,9 @@ class NotificationWorker:
         self._smtp = smtp
         self._metrics = metrics
 
+    def record_test_live_mismatch(self, expected_environment: str) -> None:
+        self._metrics.test_live_mismatch(expected_environment)
+
     def process(self, event: NotificationEvent, *, now_epoch: int) -> str:
         try:
             policy = self._policies.resolve(event)
@@ -98,8 +101,10 @@ class NotificationWorker:
             if result.outcome == "accepted_by_smtp" and result.reason_code == "smtp_accepted":
                 self._store.mark_accepted(event, now_epoch=now_epoch)
                 return "processed"
-            if result.outcome == "retryable" and result.reason_code == "smtp_transient":
+            if result.outcome == "retryable" and result.reason_code in {"smtp_transient", "smtp_throttled"}:
                 self._store.mark_retryable(event, max_attempts=policy.max_attempts, now_epoch=now_epoch)
+                if result.reason_code == "smtp_throttled":
+                    self._metrics.smtp_throttled(event.environment)
                 return "retry"
             if result.outcome == "uncertain" and result.reason_code == "smtp_ambiguous":
                 self._store.mark_uncertain(event, result.reason_code, now_epoch=now_epoch)

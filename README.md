@@ -1,6 +1,6 @@
 # Zoolanding Notifications
 
-Generic server-only outbound transactional email for Zoolanding drafts. Phase 6 is implemented locally; no AWS resource, SMTP secret, SMTP2GO call, message, or provider activation is created by this repository state.
+Generic server-only outbound transactional email for Zoolanding drafts. Phases 6 and 8 are implemented locally; no AWS resource, SMTP secret, SMTP2GO call, message, or provider activation is created by this repository state.
 
 ## Closed MVP boundary
 
@@ -22,6 +22,15 @@ Operators must review matching SMTP2GO activity before using `tools/reconcile_de
 
 Code-owned conditional limits are 20 attempts per draft/minute and 100 per connection namespace/minute. The SQS source uses batch size 1, maximum concurrency 2, partial batch failures, 180-second visibility, and a DLQ after five receives.
 
+## Infrastructure readiness
+
+- CI runs on pushes and pull requests for every branch. There is no AWS `dev` stack, deploy workflow, deployment environment, or SAM deploy profile.
+- Test deployment accepts only the protected `dev -> test` promotion; production accepts only `test -> main`. Validation produces a SHA-256 manifest and exact build artifact, while OIDC credentials exist only in the deploy job after the promotion and artifact are reverified. Deployment and CloudFormation roles plus the alarm topic must share the deployment partition/account, and the topic must match `AWS_REGION`.
+- Config Registry, Config payload bucket, Commerce notification topic, and Integrations API identifiers are consumed through environment-scoped SSM parameter names. After OIDC and before deployment, the workflow reads the exact Commerce topic and Integrations API parameters without decryption, requires the topic to share the authenticated deployment partition/account and region, and never prints either value. The stack publishes only its worker role ARN, queue ARN, and technical ledger name through environment-scoped plaintext SSM parameters; none is a secret.
+- Runtime IAM is read-only for Config and exact immutable descriptors, invokes only the Integrations connection-resolution route, and can read only version-suffixed notification SMTP/recipient secret paths. It has no secret mutation, Config mutation, S3 write/list, or SNS publish permission.
+- Queue/DLQ depth and age, Lambda errors/throttles, SMTP circuit, SMTP2GO authentication/quota/documented throttle rejection, and test/live mismatch all alarm through the required operator `AlarmTopicArn`.
+- `tools/notification_readiness_smoke.py` performs no send. It reads seven exact SSM identifiers without decryption, requires the Commerce topic plus published worker/queue ARNs to share one partition/account, and emits only the validated environment, observation epoch, and `ready`, `missing_input`, `auth_failure`, `configuration_failure`, `provider_failure`, or `propagation_delay`.
+
 ## Safe recipient operations
 
 `tools/manage_recipient_secret.py create` reads the address through hidden input, uses `CreateSecret` once, and never prints the value or path. Any change requires a new `recipientSetVersion`, which produces a new path. `revoke` changes only `zoolanding:enabled=false`.
@@ -37,9 +46,10 @@ python -m pip_audit --requirement requirements-dev.txt
 sam validate --lint
 sam build --no-cached
 python tests/verify_sam_build.py
+python tools/notification_readiness_smoke.py --environment test --region us-east-1
 git diff --check
 ```
 
 ## Deployment verdict
 
-**NO-GO.** Phase 8 owns deployment workflows/profiles, exact IAM caller identities and API route ARN, stack parameters, alarm destination, live quotas, secret provisioning/rotation, SMTP2GO account and sender-domain evidence, failure injection, and end-to-end acceptance/delivery proof. This Phase 6 repository intentionally has no `samconfig.toml`, deployment workflow, API Gateway, or AWS `dev` environment.
+**NO-GO for deployment.** The local Phase 8 controls are present, but deployment still requires environment protection/variables, the upstream SSM identifiers, exact OIDC and CloudFormation roles, an operator alarm topic, provisioned and audited per-draft SMTP/recipient secrets, SMTP2GO account and sender-domain evidence, live quota confirmation, failure injection, and end-to-end acceptance/delivery proof. The service intentionally has no API Gateway or AWS `dev` environment.

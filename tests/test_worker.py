@@ -68,9 +68,17 @@ class SMTP:
 class Metrics:
     def __init__(self):
         self.circuits = []
+        self.throttles = []
+        self.mismatches = []
 
     def circuit_opened(self, environment, reason_code):
         self.circuits.append((environment, reason_code))
+
+    def smtp_throttled(self, environment):
+        self.throttles.append(environment)
+
+    def test_live_mismatch(self, environment):
+        self.mismatches.append(environment)
 
 
 def result(outcome, reason):
@@ -256,6 +264,14 @@ class NotificationWorkerTests(unittest.TestCase):
                 self.assertEqual(worker.process(parsed_event(), now_epoch=NOW + 1), "retry")
                 self.assertEqual(self.calls.count("smtp"), 1)
 
+    def test_smtp2go_throttle_is_retryable_and_emits_a_separate_metric(self):
+        worker = self.worker([result("retryable", "smtp_throttled")])
+
+        self.assertEqual(worker.process(parsed_event(), now_epoch=NOW), "retry")
+        self.assertEqual(self.metrics.throttles, ["test"])
+        self.assertEqual(self.metrics.circuits, [])
+        self.assertFalse(self.store.circuit_open(parsed_event(), "test-tenant-a-draft-a-mail-primary"))
+
     def test_current_recipient_revocation_blocks_before_smtp(self):
         client = SecretClient()
         client.descriptions[next(key for key in client.descriptions if "/recipients/" in key)]["Tags"] = [
@@ -299,6 +315,7 @@ class NotificationWorkerTests(unittest.TestCase):
             ),
             {"batchItemFailures": [{"itemIdentifier": "wrong-env"}]},
         )
+        self.assertEqual(self.metrics.mismatches, ["test"])
 
         with self.assertRaises(ValueError):
             process_batch({}, worker, now_epoch=NOW, expected_environment="test")

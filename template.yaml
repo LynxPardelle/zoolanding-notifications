@@ -9,26 +9,32 @@ Parameters:
       - test
       - production
   CommerceNotificationRequestsTopicArn:
-    Type: String
-    AllowedPattern: '^arn:(aws|aws-us-gov|aws-cn):sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_.-]+$'
+    Type: AWS::SSM::Parameter::Value<String>
+    AllowedPattern: '^/zoolanding/(test|production)/topics/commerce-notification-requests-arn$'
+    AllowedValues:
+      - /zoolanding/test/topics/commerce-notification-requests-arn
+      - /zoolanding/production/topics/commerce-notification-requests-arn
   AlarmTopicArn:
     Type: String
     AllowedPattern: '^arn:(aws|aws-us-gov|aws-cn):sns:[a-z0-9-]+:[0-9]{12}:[A-Za-z0-9_.-]+$'
   ConfigRegistryTableName:
-    Type: String
-    MinLength: 3
-    MaxLength: 255
-    AllowedPattern: '^[A-Za-z0-9_.-]{3,255}$'
+    Type: AWS::SSM::Parameter::Value<String>
+    AllowedPattern: '^/zoolanding/(test|production)/config/registry-table-name$'
+    AllowedValues:
+      - /zoolanding/test/config/registry-table-name
+      - /zoolanding/production/config/registry-table-name
   ConfigPayloadsBucketName:
-    Type: String
-    MinLength: 3
-    MaxLength: 63
-    AllowedPattern: '^[a-z0-9](?:[a-z0-9.-]{1,61}[a-z0-9])$'
+    Type: AWS::SSM::Parameter::Value<String>
+    AllowedPattern: '^/zoolanding/(test|production)/config/payload-bucket-name$'
+    AllowedValues:
+      - /zoolanding/test/config/payload-bucket-name
+      - /zoolanding/production/config/payload-bucket-name
   IntegrationsApiId:
-    Type: String
-    MinLength: 10
-    MaxLength: 10
-    AllowedPattern: '^[a-z0-9]{10}$'
+    Type: AWS::SSM::Parameter::Value<String>
+    AllowedPattern: '^/zoolanding/(test|production)/services/integrations/api-id$'
+    AllowedValues:
+      - /zoolanding/test/services/integrations/api-id
+      - /zoolanding/production/services/integrations/api-id
 
 Mappings:
   IntegrationsStageByEnvironment:
@@ -186,8 +192,8 @@ Resources:
                   - secretsmanager:DescribeSecret
                   - secretsmanager:GetSecretValue
                 Resource:
-                  - Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/zoolanding/${EnvironmentName}/*/*/notifications/smtp/*-*
-                  - Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/zoolanding/${EnvironmentName}/*/*/notifications/recipients/*/*/*-*
+                  - Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/zoolanding/${EnvironmentName}/*/*/notifications/smtp/*-??????
+                  - Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/zoolanding/${EnvironmentName}/*/*/notifications/recipients/*/*/*-??????
               - Effect: Allow
                 Action:
                   - execute-api:Invoke
@@ -255,6 +261,64 @@ Resources:
             ScalingConfig:
               MaximumConcurrency: 2
 
+  SmtpWorkerRoleArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name:
+        Fn::Sub: /zoolanding/${EnvironmentName}/services/notifications/smtp-worker-role-arn
+      Type: String
+      Value:
+        Fn::GetAtt:
+          - SmtpDeliveryWorkerRole
+          - Arn
+      Description: Exact notifications SMTP worker role ARN for internal caller allowlists.
+      Tier: Standard
+
+  NotificationQueueArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name:
+        Fn::Sub: /zoolanding/${EnvironmentName}/queues/notification-requests-arn
+      Type: String
+      Value:
+        Fn::GetAtt:
+          - NotificationQueue
+          - Arn
+      Description: Exact outbound notification request queue ARN.
+      Tier: Standard
+
+  DeliveryLedgerNameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name:
+        Fn::Sub: /zoolanding/${EnvironmentName}/tables/notifications-delivery-ledger-name
+      Type: String
+      Value:
+        Ref: DeliveryLedger
+      Description: Exact technical notification delivery ledger table name.
+      Tier: Standard
+
+  QueueDepthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Visible notification requests exceed the bounded worker backlog.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value:
+            Fn::GetAtt:
+              - NotificationQueue
+              - QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 10
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - Ref: AlarmTopicArn
+
   DlqDepthAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -287,6 +351,27 @@ Resources:
           Value:
             Fn::GetAtt:
               - NotificationQueue
+              - QueueName
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 300
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - Ref: AlarmTopicArn
+
+  DlqAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Oldest dead-lettered notification exceeds five minutes.
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Dimensions:
+        - Name: QueueName
+          Value:
+            Fn::GetAtt:
+              - NotificationDeadLetterQueue
               - QueueName
       Statistic: Maximum
       Period: 60
@@ -341,6 +426,86 @@ Resources:
       AlarmDescription: SMTP authentication or quota circuit opened.
       Namespace: Zoolanding/Notifications
       MetricName: CircuitOpen
+      Dimensions:
+        - Name: Environment
+          Value:
+            Ref: EnvironmentName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - Ref: AlarmTopicArn
+
+  Smtp2GoAuthenticationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: SMTP2GO rejected SMTP authentication.
+      Namespace: Zoolanding/Notifications
+      MetricName: Smtp2GoAuthenticationRejected
+      Dimensions:
+        - Name: Environment
+          Value:
+            Ref: EnvironmentName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - Ref: AlarmTopicArn
+
+  Smtp2GoQuotaAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: SMTP2GO rejected a message because account quota is exhausted.
+      Namespace: Zoolanding/Notifications
+      MetricName: Smtp2GoQuotaRejected
+      Dimensions:
+        - Name: Environment
+          Value:
+            Ref: EnvironmentName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - Ref: AlarmTopicArn
+
+  Smtp2GoThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: SMTP2GO rejected a message for a documented rate or connection limit.
+      Namespace: Zoolanding/Notifications
+      MetricName: Smtp2GoThrottleRejected
+      Dimensions:
+        - Name: Environment
+          Value:
+            Ref: EnvironmentName
+      Statistic: Sum
+      Period: 60
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - Ref: AlarmTopicArn
+
+  TestLiveMismatchAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: A notification event crossed the test and production boundary.
+      Namespace: Zoolanding/Notifications
+      MetricName: TestLiveMismatch
+      Dimensions:
+        - Name: Environment
+          Value:
+            Ref: EnvironmentName
       Statistic: Sum
       Period: 60
       EvaluationPeriods: 1
@@ -359,3 +524,17 @@ Outputs:
   DeliveryLedgerName:
     Value:
       Ref: DeliveryLedger
+  SmtpWorkerRoleArn:
+    Value:
+      Fn::GetAtt:
+        - SmtpDeliveryWorkerRole
+        - Arn
+  SmtpWorkerRoleArnParameterName:
+    Value:
+      Ref: SmtpWorkerRoleArnParameter
+  NotificationQueueArnParameterName:
+    Value:
+      Ref: NotificationQueueArnParameter
+  DeliveryLedgerNameParameterName:
+    Value:
+      Ref: DeliveryLedgerNameParameter
