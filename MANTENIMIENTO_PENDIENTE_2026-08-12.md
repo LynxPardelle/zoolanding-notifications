@@ -1,23 +1,27 @@
-# Mantenimiento pendiente — 2026-08-12
+# Mantenimiento del repositorio — actualizado 2026-08-17
 
-## Publicación bloqueada de forma segura
+## Publicación y automatización
 
-Este repositorio no tiene remoto configurado. Su historial se conservó sin
-crear un destino GitHub ni inferir visibilidad.
+- Origen canónico privado: `https://github.com/LynxPardelle/zoolanding-notifications`.
+- Ramas base publicadas: `main`, `test` y `dev`; promoción `dev -> test -> main`.
+- CI tiene permisos de lectura. Los Environments limitan `test` a la rama `test`
+  y `production` a `main`.
+- Roles OIDC/CloudFormation y topic de alarmas están configurados sin claves AWS
+  estáticas.
+- Validación local: 65/65 pruebas, compilación, SAM, Actionlint y Gitleaks; no se
+  envió ningún mensaje real.
 
-- Destino candidato, sujeto a aprobación: `LynxPardelle/zoolanding-notifications`.
-- Visibilidad recomendada hasta revisar el rollout de correo: **privada**.
-- Rama actual: `codex/phase8-infrastructure-readiness`.
-- Validación local: 65/65 pruebas, compilación Python y
-  `sam validate --lint` correctos.
-- Despliegue/envío: **NO-GO**; no se creó infraestructura, no se leyó un secreto
-  y no se envió ningún mensaje.
+## Despliegue pendiente
 
-Cuando se apruebe un repositorio, agregue el `origin` exacto y publique primero
-esta rama con un push normal. Preserve `dev -> test -> main`, no fuerce historia
-y mantenga las ramas de fases anteriores hasta verificar su alcance remoto.
+**NO-GO para desplegar la aplicación.** Sólo existen las identidades retenidas.
+Faltan el stack Notifications, parámetros SSM, secretos por borrador, cuenta y
+dominio SMTP2GO auditados, cuotas, pruebas de fallos y evidencia de entrega. El
+topic de alarmas tiene cero suscriptores confirmados.
 
-Al transferir, excluya direcciones, cuerpos o variables de mensajes,
-credenciales SMTP, respuestas de proveedor, secretos de destinatarios,
-artefactos SAM y entornos virtuales. Los valores reales deben viajar sólo por
-el gestor de secretos y el procedimiento operativo aprobados.
+La protección de ramas privadas fue rechazada por el plan GitHub actual. Se
+mantuvo la visibilidad privada; use pull requests, CI y pushes normales, y nunca
+fuerce historia.
+
+No transfiera destinatarios, cuerpos, credenciales SMTP, respuestas de
+proveedor, logs, `.aws-sam`, cachés ni entornos virtuales. Clone GitHub y obtenga
+valores reales sólo del gestor de secretos autorizado.
