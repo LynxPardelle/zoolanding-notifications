@@ -7,8 +7,8 @@
 - CI tiene permisos de lectura. Los Environments limitan `test` a la rama `test`
   y `production` a `main`.
 - Roles OIDC/CloudFormation y topic de alarmas están configurados como secretos
-  de cada GitHub Environment, sin claves AWS estáticas. Las variables antiguas
-  deben eliminarse sólo después de verificar este workflow en GitHub.
+  de cada GitHub Environment, sin claves AWS estáticas. Las variables duplicadas
+  fueron eliminadas después de verificar correctamente la CI del commit `53d1b90`.
 - La CI incluye Gitleaks fijado por SHA, historial completo, cancelación de runs
   obsoletos y límites de tiempo. Los identificadores AWS sólo llegan a los pasos
   que los consumen y el ID de cuenta se enmascara.
