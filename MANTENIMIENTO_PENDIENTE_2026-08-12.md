@@ -2,7 +2,7 @@
 
 ## Publicación y automatización
 
-- Origen canónico: `https://github.com/LynxPardelle/zoolanding-notifications`.
+- Origen canónico público: `https://github.com/LynxPardelle/zoolanding-notifications`.
 - Ramas base publicadas: `main`, `test` y `dev`; promoción `dev -> test -> main`.
 - CI tiene permisos de lectura. Los Environments limitan `test` a la rama `test`
   y `production` a `main`.
@@ -12,6 +12,9 @@
 - La CI incluye Gitleaks fijado por SHA, historial completo, cancelación de runs
   obsoletos y límites de tiempo. Los identificadores AWS sólo llegan a los pasos
   que los consumen y el ID de cuenta se enmascara.
+- `dev`, `test` y `main` exigen PR y CI estricto, incluyen a administradores,
+  resuelven conversaciones y bloquean force-push y borrado. Secret scanning,
+  push protection, patrones no-proveedor y validación de credenciales están activos.
 - El adaptador SMTP reintenta fallos de red anteriores a `DATA`, mantiene como
   ambiguos los fallos durante el envío y falla cerrado ante certificados inválidos.
 - Validación local: 67/67 pruebas pasaron tres veces, compilación, SAM lint,
