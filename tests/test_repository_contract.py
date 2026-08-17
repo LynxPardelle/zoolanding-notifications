@@ -308,6 +308,18 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertIn("fetch-depth: 0", ci_text)
         self.assertIn("cancel-in-progress: true", ci_text)
         self.assertEqual(ci_text.count("timeout-minutes:"), 2)
+        self.assertRegex(
+            ci_text,
+            r"(?m)^permissions:\n  contents: read\n  pull-requests: read$",
+        )
+        self.assertLess(
+            ci_text.index("Verify exact clean commit"),
+            ci_text.index("Scan repository and history for secrets"),
+        )
+        self.assertLess(
+            ci_text.index("Validate exact SAM build"),
+            ci_text.index("Scan repository and history for secrets"),
+        )
 
         cases = {
             "deploy-test.yml": ("test", "dev", "test"),
