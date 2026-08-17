@@ -151,6 +151,42 @@ class SMTPAdapterTests(unittest.TestCase):
                 self.assertEqual((result.outcome, result.reason_code), expected)
                 self.assertNotIn("sensitive", repr(result))
 
+    def test_retries_network_failures_before_smtp_data(self):
+        from src.smtp_adapter import SMTPAdapter
+        from src.templates import render_message
+
+        event, connection, smtp_secret, recipient = dependencies()
+        message = render_message(event, connection, recipient)
+
+        def failed_connection(*_args, **_kwargs):
+            raise socket.timeout("sensitive connection detail")
+
+        class FailedLoginSMTP(FakeSMTP):
+            def login(self, username, password):
+                del username, password
+                raise smtplib.SMTPServerDisconnected("sensitive login detail")
+
+        for factory in (failed_connection, FailedLoginSMTP):
+            with self.subTest(factory=factory):
+                result = SMTPAdapter(factory=factory).send(connection, smtp_secret, message)
+                self.assertEqual((result.outcome, result.reason_code), ("retryable", "smtp_transient"))
+                self.assertNotIn("sensitive", repr(result))
+
+    def test_fails_closed_when_tls_certificate_validation_fails_before_smtp_data(self):
+        from src.smtp_adapter import SMTPAdapter
+        from src.templates import render_message
+
+        event, connection, smtp_secret, recipient = dependencies()
+        message = render_message(event, connection, recipient)
+
+        def invalid_certificate(*_args, **_kwargs):
+            raise ssl.SSLCertVerificationError("sensitive certificate detail")
+
+        result = SMTPAdapter(factory=invalid_certificate).send(connection, smtp_secret, message)
+
+        self.assertEqual((result.outcome, result.reason_code), ("failed", "smtp_permanent"))
+        self.assertNotIn("sensitive", repr(result))
+
     def test_sanitizes_partial_recipient_errors_and_rejects_endpoint_downgrade(self):
         from dataclasses import replace
 

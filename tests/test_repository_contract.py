@@ -304,6 +304,10 @@ class RepositoryContractTests(unittest.TestCase):
         self.assertNotIn("configure-aws-credentials", ci_text)
         self.assertNotIn("id-token: write", ci_text)
         self.assertIn("python -m pip_audit -r requirements-dev.txt", ci_text)
+        self.assertIn("gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7", ci_text)
+        self.assertIn("fetch-depth: 0", ci_text)
+        self.assertIn("cancel-in-progress: true", ci_text)
+        self.assertEqual(ci_text.count("timeout-minutes:"), 2)
 
         cases = {
             "deploy-test.yml": ("test", "dev", "test"),
@@ -321,6 +325,14 @@ class RepositoryContractTests(unittest.TestCase):
                 self.assertIn("artifact-ids:", text)
                 self.assertEqual(text.count("id-token: write"), 1)
                 self.assertEqual(text.count("configure-aws-credentials@"), 1)
+                self.assertNotIn("${{ vars.", text)
+                for secret_name in (
+                    "AWS_ROLE_ARN",
+                    "AWS_CLOUDFORMATION_ROLE_ARN",
+                    "ALARM_TOPIC_ARN",
+                ):
+                    self.assertIn(f"secrets.{secret_name}", text)
+                self.assertIn("mask-aws-account-id: true", text)
                 self.assertLess(text.rfind("promotion_target_tip_mismatch"), text.index("configure-aws-credentials@"))
                 self.assertIn(f'"EnvironmentName={environment}"', text)
                 self.assertIn(f'"ConfigRegistryTableName=/zoolanding/{environment}/config/registry-table-name"', text)

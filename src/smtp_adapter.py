@@ -51,6 +51,7 @@ class SMTPAdapter:
             raise SMTPConfigurationError("SMTP adapter configuration is invalid")
         smtp = None
         accepted = False
+        delivery_attempted = False
         try:
             smtp = self._factory(
                 "mail.smtp2go.com",
@@ -59,6 +60,7 @@ class SMTPAdapter:
                 context=ssl.create_default_context(),
             )
             smtp.login(credentials.username, credentials.password)
+            delivery_attempted = True
             refused = smtp.send_message(
                 message,
                 from_addr=connection.from_address,
@@ -83,8 +85,14 @@ class SMTPAdapter:
             return _recipient_result(error.recipients)
         except smtplib.SMTPResponseException as error:
             return _response_result(error.smtp_code, error.smtp_error)
+        except ssl.SSLCertVerificationError:
+            if delivery_attempted:
+                return SMTPResult("uncertain", "smtp_ambiguous")
+            return SMTPResult("failed", "smtp_permanent")
         except (ssl.SSLError, socket.timeout, TimeoutError, smtplib.SMTPServerDisconnected, OSError):
-            return SMTPResult("uncertain", "smtp_ambiguous")
+            if delivery_attempted:
+                return SMTPResult("uncertain", "smtp_ambiguous")
+            return SMTPResult("retryable", "smtp_transient")
         except Exception:
             return SMTPResult("uncertain", "smtp_ambiguous")
         finally:
